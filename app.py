@@ -105,6 +105,15 @@ if df is None:
 # --- SIDEBAR MIT FILTERN ---
 st.sidebar.title("Filter & Optionen")
 
+# --- START: NEUER HAUPTFILTER ---
+analyse_typen = df['Analyse_Typ'].unique()
+selected_analyse_typ = st.sidebar.selectbox("Analyse-Typ:", analyse_typen)
+
+# Filtere das DataFrame basierend auf dem ausgewählten Analyse-Typ
+df = df[df['Analyse_Typ'] == selected_analyse_typ]
+# --- ENDE: NEUER HAUPTFILTER ---
+
+
 tag_typen = sorted(df['tagtyp'].unique())
 default_tag = ['Mo-Fr'] if 'Mo-Fr' in tag_typen else []
 selected_tag = st.sidebar.multiselect("Tag-Typ:", tag_typen, default=default_tag)
@@ -141,13 +150,20 @@ if 'mittelwert_soll_fahrzeit' in df.columns and 'mittelwert_soll_haltezeit' in d
 else:
     ausschluss_soll_zeit_null = False
 
-if 'mittelwert_soll_fahrzeit' in df.columns:
-    soll_fahrzeiten = sorted(df['mittelwert_soll_fahrzeit'].unique())
-    selected_soll_fahrzeit = st.sidebar.multiselect("Soll-Fahrzeit:", soll_fahrzeiten, default=[])
+# --- START: KONDITIONALE FILTER ---
+# Zeige diese Filter nur an, wenn der "Detail"-Analyse-Typ ausgewählt ist
+if selected_analyse_typ == 'Detail':
+    if 'mittelwert_soll_fahrzeit' in df.columns:
+        soll_fahrzeiten = sorted(df['mittelwert_soll_fahrzeit'].unique())
+        selected_soll_fahrzeit = st.sidebar.multiselect("Soll-Fahrzeit:", soll_fahrzeiten, default=[])
 
-if 'mittelwert_soll_haltezeit' in df.columns:
-    soll_haltezeiten = sorted(df['mittelwert_soll_haltezeit'].unique())
-    selected_soll_haltezeit = st.sidebar.multiselect("Soll-Haltezeit:", soll_haltezeiten, default=[])
+    if 'mittelwert_soll_haltezeit' in df.columns:
+        soll_haltezeiten = sorted(df['mittelwert_soll_haltezeit'].unique())
+        selected_soll_haltezeit = st.sidebar.multiselect("Soll-Haltezeit:", soll_haltezeiten, default=[])
+else:
+    selected_soll_fahrzeit = []
+    selected_soll_haltezeit = []
+# --- ENDE: KONDITIONALE FILTER ---
 
 st.sidebar.subheader("Analyse-Kennwert")
 kennwert_optionen = ['Gesamtabweichung', 'Abweichung Fahrzeit', 'Abweichung Haltezeit']
@@ -419,10 +435,11 @@ with col_stats:
     # Datenaufbereitung (einmal für alle Tabs)
     if not df_filtered.empty:
         grouping_keys = ['von_ort', 'nach_ort']
-        if 'mittelwert_soll_fahrzeit' in df_filtered.columns:
-            grouping_keys.append('mittelwert_soll_fahrzeit')
-        if 'mittelwert_soll_haltezeit' in df_filtered.columns:
-            grouping_keys.append('mittelwert_soll_haltezeit')
+        if selected_analyse_typ == 'Detail':
+            if 'mittelwert_soll_fahrzeit' in df_filtered.columns:
+                grouping_keys.append('mittelwert_soll_fahrzeit')
+            if 'mittelwert_soll_haltezeit' in df_filtered.columns:
+                grouping_keys.append('mittelwert_soll_haltezeit')
 
         agg_dict = {col: 'first' for col in df_filtered.columns if col not in grouping_keys and col != 'linien'}
         if 'linien' in df_filtered.columns:
@@ -463,15 +480,16 @@ with col_stats:
         
         def create_display_label(row):
             label = f"{row['von_ort']} → {row['nach_ort']}"
-            fahrzeit = row.get('mittelwert_soll_fahrzeit')
-            haltezeit = row.get('mittelwert_soll_haltezeit')
-            details = []
-            if fahrzeit is not None:
-                details.append(f"Soll-Fahrzeit: {fahrzeit:.0f}s")
-            if haltezeit is not None:
-                details.append(f"Soll-Haltezeit: {haltezeit:.0f}s")
-            if details:
-                label += f" ({', '.join(details)})"
+            if selected_analyse_typ == 'Detail':
+                fahrzeit = row.get('mittelwert_soll_fahrzeit')
+                haltezeit = row.get('mittelwert_soll_haltezeit')
+                details = []
+                if fahrzeit is not None:
+                    details.append(f"Soll-Fahrzeit: {fahrzeit:.0f}s")
+                if haltezeit is not None:
+                    details.append(f"Soll-Haltezeit: {haltezeit:.0f}s")
+                if details:
+                    label += f" ({', '.join(details)})"
             return label
         stats_tabelle.index = stats_tabelle.apply(create_display_label, axis=1)
 
@@ -509,7 +527,7 @@ with col_stats:
                 df_display = df_display.copy()
                 df_display['Anzahl'] = df_display['Anzahl'].astype(int)
                 format_dict['Anzahl'] = '{:d}'
-            
+
             table_height = (len(df_display) + 1) * 35 + 3
             st.dataframe(df_display.style.format(format_dict), use_container_width=True, height=table_height)
         else:
@@ -570,19 +588,18 @@ with col_boxplot:
                 dynamic_height = max(400, 30 * num_strecken)
 
                 fig.update_layout(
-                    title={
-                        'text': f"<b>Verteilung für '{selected_kennwert}'</b>",
-                        'y':0.95, 'x':0.5, 'xanchor': 'center', 'yanchor': 'top'
-                    },
+                    # KORREKTUR: Titel entfernt, um den Rand zu verkleinern
                     xaxis_title=f"{selected_kennwert} (Sekunden)",
                     yaxis_title=None,
                     showlegend=False,
                     height=dynamic_height,
                     yaxis=dict(autorange="reversed"),
                     template="plotly_white",
-                    margin=dict(t=50)
+                    margin=dict(t=20, b=20, l=20, r=20) # Kleinerer Rand
                 )
-
+                
+                # KORREKTUR: Titel als separate Überschrift hinzugefügt
+                st.subheader(f"Verteilung für '{selected_kennwert}'")
                 st.plotly_chart(fig, use_container_width=True)
             else:
                 st.warning("Nicht alle benötigten Statistik-Spalten (Median, Quartile etc.) sind in der Tabelle vorhanden.")
@@ -591,4 +608,5 @@ with col_boxplot:
 
 
 with st.expander("Gefilterte Rohdaten"):
+    # KORREKTUR: Höhe entfernt, um die Tabelle "endlos" zu machen
     st.dataframe(df_filtered)
