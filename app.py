@@ -105,14 +105,13 @@ if df is None:
 # --- SIDEBAR MIT FILTERN ---
 st.sidebar.title("Filter & Optionen")
 
-# --- START: NEUER HAUPTFILTER ---
+# --- START: NEUE FILTERSTRUKTUR ---
+st.sidebar.subheader("Hauptfilter")
 analyse_typen = df['Analyse_Typ'].unique()
 selected_analyse_typ = st.sidebar.selectbox("Analyse-Typ:", analyse_typen)
 
 # Filtere das DataFrame basierend auf dem ausgewählten Analyse-Typ
 df = df[df['Analyse_Typ'] == selected_analyse_typ]
-# --- ENDE: NEUER HAUPTFILTER ---
-
 
 tag_typen = sorted(df['tagtyp'].unique())
 default_tag = ['Mo-Fr'] if 'Mo-Fr' in tag_typen else []
@@ -134,36 +133,60 @@ if 'linien' in df.columns:
     sorted_lines = sorted(list(all_lines), key=lambda x: int(x) if x.isdigit() else x)
     selected_linien = st.sidebar.multiselect("Linien:", sorted_lines, default=[])
 
-if 'anzahl' in df.columns and not df['anzahl'].empty:
-    min_fahrten = int(df['anzahl'].min())
-    max_fahrten = int(df['anzahl'].max())
-    min_anzahl_fahrten = st.sidebar.number_input(
-        "Minimale Anzahl Fahrten:",
-        min_value=min_fahrten,
-        max_value=max_fahrten,
-        value=min_fahrten,
-        step=10
-    )
+with st.sidebar.expander("Weitere Filteroptionen"):
+    if 'anzahl' in df.columns and not df['anzahl'].empty:
+        min_fahrten = int(df['anzahl'].min())
+        max_fahrten = int(df['anzahl'].max())
+        min_anzahl_fahrten = st.number_input(
+            "Minimale Anzahl Fahrten:",
+            min_value=min_fahrten,
+            max_value=max_fahrten,
+            value=min_fahrten,
+            step=10
+        )
 
-if 'mittelwert_soll_fahrzeit' in df.columns and 'mittelwert_soll_haltezeit' in df.columns:
-    ausschluss_soll_zeit_null = st.sidebar.checkbox("Strecken mit Soll-Zeit 0 ausschliessen", value=True)
-else:
-    ausschluss_soll_zeit_null = False
+    if 'mittelwert_soll_fahrzeit' in df.columns and 'mittelwert_soll_haltezeit' in df.columns:
+        ausschluss_soll_zeit_null = st.checkbox("Strecken mit Soll-Zeit 0 ausschliessen", value=True)
+    else:
+        ausschluss_soll_zeit_null = False
 
-# --- START: KONDITIONALE FILTER ---
-# Zeige diese Filter nur an, wenn der "Detail"-Analyse-Typ ausgewählt ist
-if selected_analyse_typ == 'Detail':
-    if 'mittelwert_soll_fahrzeit' in df.columns:
-        soll_fahrzeiten = sorted(df['mittelwert_soll_fahrzeit'].unique())
-        selected_soll_fahrzeit = st.sidebar.multiselect("Soll-Fahrzeit:", soll_fahrzeiten, default=[])
+    if selected_analyse_typ == 'Detail':
+        if 'mittelwert_soll_fahrzeit' in df.columns:
+            soll_fahrzeiten = sorted(df['mittelwert_soll_fahrzeit'].unique())
+            selected_soll_fahrzeit = st.multiselect("Soll-Fahrzeit:", soll_fahrzeiten, default=[])
 
-    if 'mittelwert_soll_haltezeit' in df.columns:
-        soll_haltezeiten = sorted(df['mittelwert_soll_haltezeit'].unique())
-        selected_soll_haltezeit = st.sidebar.multiselect("Soll-Haltezeit:", soll_haltezeiten, default=[])
-else:
-    selected_soll_fahrzeit = []
-    selected_soll_haltezeit = []
-# --- ENDE: KONDITIONALE FILTER ---
+        if 'mittelwert_soll_haltezeit' in df.columns:
+            soll_haltezeiten = sorted(df['mittelwert_soll_haltezeit'].unique())
+            selected_soll_haltezeit = st.multiselect("Soll-Haltezeit:", soll_haltezeiten, default=[])
+    else:
+        selected_soll_fahrzeit = []
+        selected_soll_haltezeit = []
+
+    if 'abweichung_signifikant' in df.columns:
+        nur_signifikante = st.checkbox("Nur signifikante Abweichungen anzeigen")
+    else:
+        nur_signifikante = False
+
+    if 'Gesamtabweichung' in df.columns:
+        if not df['Gesamtabweichung'].dropna().empty:
+            min_val = df['Gesamtabweichung'].min()
+            max_val = df['Gesamtabweichung'].max()
+            selected_abweichung = st.slider(
+                "Gesamtabweichung filtern (Sekunden):",
+                min_value=int(min_val),
+                max_value=int(max_val),
+                value=(int(min_val), int(max_val))
+            )
+        else:
+            selected_abweichung = (0, 100)
+    else:
+        selected_abweichung = (0, 100)
+
+    von_orte = sorted(df['von_ort'].unique())
+    selected_von_ort = st.multiselect("Startort (von):", von_orte, default=[])
+
+    nach_orte = sorted(df['nach_ort'].unique())
+    selected_nach_ort = st.multiselect("Zielort (nach):", nach_orte, default=[])
 
 st.sidebar.subheader("Analyse-Kennwert")
 kennwert_optionen = ['Gesamtabweichung', 'Abweichung Fahrzeit', 'Abweichung Haltezeit']
@@ -187,36 +210,7 @@ selected_percentile_col = st.sidebar.selectbox(
     format_func=lambda x: percentile_options[x],
     index=1
 )
-
-st.sidebar.subheader("Weitere Filter")
-if 'abweichung_signifikant' in df.columns:
-    nur_signifikante = st.sidebar.checkbox("Nur signifikante Abweichungen anzeigen")
-else:
-    nur_signifikante = False
-
-
-if 'Gesamtabweichung' in df.columns:
-    if not df['Gesamtabweichung'].dropna().empty:
-        min_val = df['Gesamtabweichung'].min()
-        max_val = df['Gesamtabweichung'].max()
-        selected_abweichung = st.sidebar.slider(
-            "Gesamtabweichung filtern (Sekunden):",
-            min_value=int(min_val),
-            max_value=int(max_val),
-            value=(int(min_val), int(max_val))
-        )
-    else:
-        selected_abweichung = (0, 100)
-        st.sidebar.text("Keine gültigen Werte für Abweichung.")
-else:
-    selected_abweichung = (0, 100)
-
-
-von_orte = sorted(df['von_ort'].unique())
-selected_von_ort = st.sidebar.multiselect("Startort (von):", von_orte, default=[])
-
-nach_orte = sorted(df['nach_ort'].unique())
-selected_nach_ort = st.sidebar.multiselect("Zielort (nach):", nach_orte, default=[])
+# --- ENDE: NEUE FILTERSTRUKTUR ---
 
 
 # --- DATENFILTERUNG BASIEREND AUF DER AUSWAHL ---
@@ -595,7 +589,7 @@ with col_boxplot:
                     height=dynamic_height,
                     yaxis=dict(autorange="reversed"),
                     template="plotly_white",
-                    margin=dict(t=20, b=20, l=20, r=20) # Kleinerer Rand
+                    margin=dict(t=0, b=20, l=20, r=50) # Kleinerer Rand
                 )
                 
                 # KORREKTUR: Titel als separate Überschrift hinzugefügt
