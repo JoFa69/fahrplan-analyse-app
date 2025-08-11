@@ -35,15 +35,24 @@ def value_to_rgb(value, min_val, max_val):
         return [128, 128, 128, 100] # Grau für fehlende Werte
     if min_val == max_val:
         return [0, 255, 0, 160] # Grün, wenn alle Werte gleich sind
-    # Normalisiere den Wert auf einen Bereich von 0 bis 1
     normalized = (value - min_val) / (max_val - min_val)
     normalized = max(0, min(1, normalized))
-    
-    # Interpoliere zwischen Grün (0) und Rot (1)
     red = int(255 * normalized)
     green = int(255 * (1 - normalized))
-    
     return [red, green, 0, 160]
+
+def format_seconds_to_hms(seconds_total):
+    """
+    Konvertiert eine Gesamtsekundenzahl in das Format hh:mm:ss.
+    """
+    if pd.isna(seconds_total) or not isinstance(seconds_total, (int, float, np.number)):
+        return "N/A"
+    
+    seconds_total = int(seconds_total)
+    hours = seconds_total // 3600
+    minutes = (seconds_total % 3600) // 60
+    seconds = seconds_total % 60
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 # --- FUNKTION ZUM LADEN UND VORBEREITEN DER DATEN ---
 @st.cache_data
@@ -54,10 +63,8 @@ def lade_daten(uploaded_file):
     if uploaded_file is None:
         return None
     try:
-        # Robustes Einlesen der CSV-Datei
         df = pd.read_csv(uploaded_file, sep=None, engine='python')
 
-        # Spalte 'mittelwert' umbenennen für mehr Klarheit
         if 'mittelwert' in df.columns:
             df.rename(columns={'mittelwert': 'Gesamtabweichung'}, inplace=True)
 
@@ -77,7 +84,6 @@ def lade_daten(uploaded_file):
         if 'NACH_WKT' in df.columns:
             df[['nach_lon', 'nach_lat']] = df['NACH_WKT'].apply(lambda x: pd.Series(parse_wkt_point(x)))
 
-        # Abweichungen berechnen
         if 'mittelwert_ist_fahrzeit' in df.columns and 'mittelwert_soll_fahrzeit' in df.columns:
             df['Abweichung Fahrzeit'] = df['mittelwert_ist_fahrzeit'] - df['mittelwert_soll_fahrzeit']
         if 'mittelwert_ist_haltezeit' in df.columns and 'mittelwert_soll_haltezeit' in df.columns:
@@ -105,12 +111,10 @@ if df is None:
 # --- SIDEBAR MIT FILTERN ---
 st.sidebar.title("Filter & Optionen")
 
-# --- START: NEUE FILTERSTRUKTUR ---
 st.sidebar.subheader("Hauptfilter")
 analyse_typen = df['Analyse_Typ'].unique()
 selected_analyse_typ = st.sidebar.selectbox("Analyse-Typ:", analyse_typen)
 
-# Filtere das DataFrame basierend auf dem ausgewählten Analyse-Typ
 df = df[df['Analyse_Typ'] == selected_analyse_typ]
 
 tag_typen = sorted(df['tagtyp'].unique())
@@ -125,13 +129,19 @@ else:
 default_zeit = ['06:30-08:30'] if '06:30-08:30' in zeitschicht_optionen else []
 selected_zeitschicht = st.sidebar.multiselect("Zeitschicht:", zeitschicht_optionen, default=default_zeit)
 
-
 if 'linien' in df.columns:
     all_lines = set()
     for line_list in df['linien'].dropna():
         all_lines.update(str(line_list).split(','))
     sorted_lines = sorted(list(all_lines), key=lambda x: int(x) if x.isdigit() else x)
     selected_linien = st.sidebar.multiselect("Linien:", sorted_lines, default=[])
+
+selected_richtung = st.sidebar.selectbox(
+    "Richtung:",
+    ['Alle', 'Hinweg', 'Rückweg'],
+    index=0,
+    help="Filtern Sie nach Hin- oder Rückweg. Die Zuordnung erfolgt automatisch basierend auf der Datenreihenfolge für eine Strecke."
+)
 
 with st.sidebar.expander("Weitere Filteroptionen"):
     if 'anzahl' in df.columns and not df['anzahl'].empty:
@@ -210,10 +220,8 @@ selected_percentile_col = st.sidebar.selectbox(
     format_func=lambda x: percentile_options[x],
     index=1
 )
-# --- ENDE: NEUE FILTERSTRUKTUR ---
 
-
-# --- DATENFILTERUNG BASIEREND AUF DER AUSWAHL ---
+# --- DATENFILTERUNG ---
 df_filtered = df.copy()
 
 if selected_tag:
@@ -247,12 +255,18 @@ if selected_nach_ort:
 if nur_signifikante:
     df_filtered = df_filtered[df_filtered['abweichung_signifikant'] == 'ja']
 
+if not df_filtered.empty:
+    df_filtered['route_id'] = df_filtered.apply(lambda row: '-'.join(sorted([row['von_ort'], row['nach_ort']])), axis=1)
+    df_filtered['direction_index'] = df_filtered.groupby('route_id').cumcount()
+    df_filtered['Richtung'] = np.where(df_filtered['direction_index'] == 0, 'Hinweg', 'Rückweg')
+    
+    if selected_richtung != 'Alle':
+        df_filtered = df_filtered[df_filtered['Richtung'] == selected_richtung]
 
 st.header("Analyse der ausgewählten Daten")
 if df_filtered.empty:
     st.warning("Keine Daten für die ausgewählten Filter gefunden.")
     st.stop()
-
 
 # --- VISUALISIERUNGEN ---
 st.header("Visualisierungen")
@@ -263,23 +277,16 @@ st.subheader(f"Geografische Darstellung (Farbe nach '{selected_kennwert}')")
 map_data_lines = df_filtered.copy()
 map_data_points = pd.DataFrame()
 
-# Tooltip-Spalten vorbereiten
 for col in ['Gesamtabweichung', 'Abweichung Fahrzeit', 'Abweichung Haltezeit']:
     if col in map_data_lines.columns:
         map_data_lines[f'{col}_str'] = map_data_lines[col].apply(lambda x: f"{x:.1f}s" if pd.notna(x) else "N/A")
 
-# Richtungs-Logik für die Karte
-map_data_lines['route_id'] = map_data_lines.apply(lambda row: '-'.join(sorted([row['von_ort'], row['nach_ort']])), axis=1)
-map_data_lines['direction_index'] = map_data_lines.groupby('route_id').cumcount()
-map_data_lines['Richtung'] = np.where(map_data_lines['direction_index'] == 0, 'Hinweg', 'Rückweg')
-offset = 0.0001 
+offset = 0.0001
 map_data_lines['von_lon_offset'] = map_data_lines['von_lon'] + offset * map_data_lines['direction_index']
 map_data_lines['von_lat_offset'] = map_data_lines['von_lat'] + offset * map_data_lines['direction_index']
 map_data_lines['nach_lon_offset'] = map_data_lines['nach_lon'] + offset * map_data_lines['direction_index']
 map_data_lines['nach_lat_offset'] = map_data_lines['nach_lat'] + offset * map_data_lines['direction_index']
 
-
-# Logik für die Farbgebung
 if 'Haltezeit' in selected_kennwert:
     if selected_kennwert in df_filtered.columns:
         map_data_points = df_filtered.groupby('nach_ort').agg(
@@ -292,7 +299,7 @@ if 'Haltezeit' in selected_kennwert:
             min_val = map_data_points['value'].min()
             max_val = map_data_points['value'].max()
             map_data_points['farbcode'] = map_data_points['value'].apply(lambda x: value_to_rgb(x, min_val, max_val))
-        map_data_lines['farbcode'] = [[128, 128, 128, 70]] * len(map_data_lines)
+    map_data_lines['farbcode'] = [[128, 128, 128, 70]] * len(map_data_lines)
 else:
     if selected_kennwert in df_filtered.columns and not df_filtered[selected_kennwert].empty:
         min_val = map_data_lines[selected_kennwert].min()
@@ -305,7 +312,6 @@ else:
         ).dropna().reset_index()
         map_data_points['farbcode'] = [[100, 100, 100, 100]] * len(map_data_points)
 
-# --- Farblegende ---
 if 'min_val' in locals() and 'max_val' in locals():
     st.write("Farblegende (Minimum bis Maximum des gewählten Kennwerts):")
     legend_html = f"""
@@ -383,69 +389,55 @@ if not map_data_lines.empty:
             )
         )
 
+    initial_lat = 47.05
+    initial_lon = 8.3
+    if not map_data_lines.empty:
+        initial_lat = map_data_lines['von_lat'].mean()
+        initial_lon = map_data_lines['von_lon'].mean()
+
     deck = pdk.Deck(
         map_style='mapbox://styles/mapbox/light-v9',
         initial_view_state=pdk.ViewState(
-            latitude=map_data_lines['von_lat'].mean(),
-            longitude=map_data_lines['von_lon'].mean(),
+            latitude=initial_lat,
+            longitude=initial_lon,
             zoom=11
         ),
         layers=layers,
         tooltip={
             "html": tooltip_html,
             "style": {"backgroundColor": "steelblue", "color": "white"}
-        }
+        },
+        height=1000  # Hier wird die Höhe auf 800 Pixel festgelegt
     )
+    st.pydeck_chart(deck, use_container_width=True)
     
-    st.pydeck_chart(deck, use_container_width=True, height=800)
 else:
     st.info("🗺️ Karten-Daten fehlen oder sind gefiltert.")
 
-# --- KENNZAHLEN UND DIAGRAMME ---
-st.subheader("Statistische Kennwerte im Überblick")
-col1, col2, col3, col4, col5 = st.columns(5)
+# --- DATEN-AGGREGATION FÜR TABELLEN UND KENNZAHLEN ---
+stats_tabelle = pd.DataFrame()
+if not df_filtered.empty:
+    grouping_keys = ['von_ort', 'nach_ort']
+    if selected_analyse_typ == 'Detail':
+        if 'mittelwert_soll_fahrzeit' in df_filtered.columns:
+            grouping_keys.append('mittelwert_soll_fahrzeit')
+        if 'mittelwert_soll_haltezeit' in df_filtered.columns:
+            grouping_keys.append('mittelwert_soll_haltezeit')
+    
+    grouping_keys.append('Richtung')
 
-if 'Gesamtabweichung' in df_filtered.columns and not df_filtered['Gesamtabweichung'].empty:
-    col1.metric(
-        "Ø Gesamtabweichung",
-        f"{df_filtered['Gesamtabweichung'].mean():,.0f}s".replace(",", "'"),
-        help="Der Durchschnitt der Gesamtabweichung über alle aktuell gefilterten Datenpunkte."
-    )
-col2.metric("Datensätze", f"{df_filtered.shape[0]:,}".replace(",", "'"))
-if 'abweichung_signifikant' in df_filtered.columns:
-    col3.metric("Signifikante Abweichungen", f"{df_filtered[df_filtered['abweichung_signifikant'] == 'ja'].shape[0]:,}".replace(",", "'"))
-if 'anzahl' in df_filtered.columns:
-    col4.metric("Gesamtzahl Messungen", f"{int(df_filtered['anzahl'].sum()):,}".replace(",", "'"))
-    col5.metric("Ø Messungen pro Strecke", f"{df_filtered['anzahl'].mean():,.0f}".replace(",", "'"))
+    agg_dict = {col: 'first' for col in df_filtered.columns if col not in grouping_keys and col != 'linien'}
+    if 'linien' in df_filtered.columns:
+        def combine_linien(series):
+            all_linien = set()
+            for item in series.dropna():
+                all_linien.update(str(item).split(','))
+            return ', '.join(sorted(list(all_linien), key=lambda x: int(x) if x.isdigit() else x))
+        agg_dict['linien'] = combine_linien
+    
+    stats_tabelle = df_filtered.groupby(grouping_keys).agg(agg_dict).reset_index()
 
-
-# --- ANZEIGE VON TABELLE UND BOXPLOT ---
-col_stats, col_boxplot = st.columns(2)
-
-with col_stats:
-    # --- START: ERSETZTER BEREICH (TAB-LAYOUT) ---
-    tab1, tab2, tab3 = st.tabs(["Übersicht & Abweichungen", "Fahrplan-Vorschlag", "Statistische Details"])
-
-    # Datenaufbereitung (einmal für alle Tabs)
-    if not df_filtered.empty:
-        grouping_keys = ['von_ort', 'nach_ort']
-        if selected_analyse_typ == 'Detail':
-            if 'mittelwert_soll_fahrzeit' in df_filtered.columns:
-                grouping_keys.append('mittelwert_soll_fahrzeit')
-            if 'mittelwert_soll_haltezeit' in df_filtered.columns:
-                grouping_keys.append('mittelwert_soll_haltezeit')
-
-        agg_dict = {col: 'first' for col in df_filtered.columns if col not in grouping_keys and col != 'linien'}
-        if 'linien' in df_filtered.columns:
-            def combine_linien(series):
-                all_linien = set()
-                for item in series.dropna():
-                    all_linien.update(str(item).split(','))
-                return ', '.join(sorted(list(all_linien), key=lambda x: int(x) if x.isdigit() else x))
-            agg_dict['linien'] = combine_linien
-        
-        stats_tabelle = df_filtered.groupby(grouping_keys).agg(agg_dict).reset_index()
-
+    if not stats_tabelle.empty:
         perzentil_abw = stats_tabelle[selected_percentile_col]
         
         anteil_fahrzeit_abw = (stats_tabelle['Abweichung Fahrzeit'] / stats_tabelle['Gesamtabweichung']).fillna(0.5)
@@ -454,7 +446,6 @@ with col_stats:
         stats_tabelle['Vorschlag Fahrzeit (s)'] = stats_tabelle['mittelwert_soll_fahrzeit'] + (perzentil_abw * anteil_fahrzeit_abw)
         stats_tabelle['Vorschlag Haltezeit (s)'] = stats_tabelle['mittelwert_soll_haltezeit'] + (perzentil_abw * anteil_haltezeit_abw)
         stats_tabelle['Vorschlag Total (s)'] = stats_tabelle['Vorschlag Fahrzeit (s)'] + stats_tabelle['Vorschlag Haltezeit (s)']
-
 
         if 'mittelwert_soll' in stats_tabelle.columns and 'Gesamtabweichung' in stats_tabelle.columns:
             stats_tabelle['Relative Abw. (%)'] = (stats_tabelle['Gesamtabweichung'] / stats_tabelle['mittelwert_soll']).replace([np.inf, -np.inf], 0) * 100
@@ -473,7 +464,7 @@ with col_stats:
         stats_tabelle.rename(columns=stats_cols, inplace=True)
         
         def create_display_label(row):
-            label = f"{row['von_ort']} → {row['nach_ort']}"
+            label = f"{row['von_ort']} → {row['nach_ort']} ({row['Richtung']})"
             if selected_analyse_typ == 'Detail':
                 fahrzeit = row.get('mittelwert_soll_fahrzeit')
                 haltezeit = row.get('mittelwert_soll_haltezeit')
@@ -487,8 +478,57 @@ with col_stats:
             return label
         stats_tabelle.index = stats_tabelle.apply(create_display_label, axis=1)
 
+# ### START: KORRIGIERTER CODE - KENNZAHLEN-BLOCK MIT LINIEN ###
+# Die Linien werden mit st.markdown() und dem <hr>-Tag erzeugt.
+st.markdown("<hr style='border:1px solid #e74c3c; margin-top: 1.5rem; margin-bottom: 0.5rem;'>", unsafe_allow_html=True)
+
+st.subheader("Statistische Kennwerte im Überblick")
+col1, col2, col3, col4, col5, col6 = st.columns(6)
+
+# Metrik 1: Ø Abweichung basierend auf Perzentil
+abweichung_perzentil = df_filtered[selected_percentile_col].mean() if not df_filtered.empty else 0
+percentile_label = percentile_options[selected_percentile_col]
+col1.metric(
+    f"Ø Abweichung ({percentile_label})",
+    f"{abweichung_perzentil:,.0f}s".replace(",", "'"),
+    help=f"Die durchschnittliche Abweichung aller gefilterten Strecken, basierend auf dem {percentile_label}."
+)
+
+# Metrik 2: Empfohlene Gesamtfahrzeit (SUMME der Vorschläge, formatiert)
+empfohlene_fahrzeit_sekunden = stats_tabelle['Vorschlag Total (s)'].sum() if not stats_tabelle.empty else 0
+col2.metric(
+    "Empf. Gesamtfahrzeit (Summe)",
+    format_seconds_to_hms(empfohlene_fahrzeit_sekunden),
+    help="Summe aller empfohlenen Gesamtfahrzeiten ('Vorschlag Total (s)') der angezeigten Strecken, formatiert als hh:mm:ss."
+)
+
+# Metrik 3: Anzahl Datensätze
+col3.metric("Datensätze", f"{df_filtered.shape[0]:,}".replace(",", "'"))
+
+# Metrik 4: Signifikante Abweichungen
+if 'abweichung_signifikant' in df_filtered.columns:
+    col4.metric("Signifikante Abweichungen", f"{df_filtered[df_filtered['abweichung_signifikant'] == 'ja'].shape[0]:,}".replace(",", "'"))
+
+# Metrik 5: Gesamtzahl aller Messungen
+if 'anzahl' in df_filtered.columns and not df_filtered.empty:
+    col5.metric("Gesamtzahl Messungen", f"{int(df_filtered['anzahl'].sum()):,}".replace(",", "'"))
+
+# Metrik 6: Ø Messungen pro Strecke
+if 'anzahl' in df_filtered.columns and not df_filtered.empty:
+    col6.metric("Ø Messungen pro Strecke", f"{df_filtered['anzahl'].mean():,.0f}".replace(",", "'"))
+
+st.markdown("<hr style='border:1px solid #e74c3c; margin-top: 0.5rem; margin-bottom: 1.5rem;'>", unsafe_allow_html=True)
+# ### ENDE: KORRIGIERTER CODE - KENNZAHLEN-BLOCK MIT LINIEN ###
+
+
+# --- ANZEIGE VON TABELLE UND BOXPLOT ---
+col_stats, col_boxplot = st.columns(2)
+
+with col_stats:
+    st.subheader("Übersicht & Abweichungen")
+    tab1, tab2, tab3 = st.tabs(["Übersicht", "Fahrplan-Vorschlag", "Statistische Details"])
+
     with tab1:
-        st.subheader("Übersicht & Abweichungen")
         if not stats_tabelle.empty:
             cols = ['Linien', 'Anzahl', 'Soll-Zeit Total', 'Ø Ist-Zeit Total', 'Ø Abw. Total', 'Relative Abw. (%)', 'Signifikant']
             display_cols = [c for c in cols if c in stats_tabelle.columns]
@@ -544,7 +584,6 @@ with col_stats:
             st.dataframe(df_display.style.format(format_dict), use_container_width=True, height=table_height)
         else:
             st.warning("Keine Daten für die Anzeige vorhanden.")
-    # --- ENDE: NEUER BEREICH (TAB-LAYOUT) ---
 
 with col_boxplot:
     with st.expander(f"Verteilung der '{selected_kennwert}' für alle gefilterten Strecken", expanded=True):
@@ -582,17 +621,15 @@ with col_boxplot:
                 dynamic_height = max(400, 30 * num_strecken)
 
                 fig.update_layout(
-                    # KORREKTUR: Titel entfernt, um den Rand zu verkleinern
                     xaxis_title=f"{selected_kennwert} (Sekunden)",
                     yaxis_title=None,
                     showlegend=False,
                     height=dynamic_height,
                     yaxis=dict(autorange="reversed"),
                     template="plotly_white",
-                    margin=dict(t=0, b=20, l=20, r=50) # Kleinerer Rand
+                    margin=dict(t=0, b=20, l=20, r=50)
                 )
                 
-                # KORREKTUR: Titel als separate Überschrift hinzugefügt
                 st.subheader(f"Verteilung für '{selected_kennwert}'")
                 st.plotly_chart(fig, use_container_width=True)
             else:
@@ -602,5 +639,4 @@ with col_boxplot:
 
 
 with st.expander("Gefilterte Rohdaten"):
-    # KORREKTUR: Höhe entfernt, um die Tabelle "endlos" zu machen
     st.dataframe(df_filtered)
